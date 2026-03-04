@@ -1,1 +1,1 @@
-# knn-recommendation-system
+# spotify-recommendation-system
