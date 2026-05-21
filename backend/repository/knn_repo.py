@@ -27,47 +27,79 @@ def _load_artifacts():
     return knn_index, X_norm, metadata, name_to_index, name_to_index_lower
 
 
-def get_recommendations(
-    track_names: list[str], n: int = 10
+def _lookup(
+    name: str,
+    artist: str,
+    name_to_index: dict,
+    name_to_index_lower: dict,
+) -> int | None:
+    key = f"{artist} - {name}"
+    if key in name_to_index:
+        return name_to_index[key]
+    lower = key.lower()
+    if lower in name_to_index_lower:
+        return name_to_index_lower[lower]
+    return None
+
+
+def get_per_track_recommendations(
+    tracks: list[dict],
+    n_per_track: int = 5,
+    max_ref_tracks: int = 5,
 ) -> tuple[list[dict] | None, list[str], int]:
     knn_index, X_norm, metadata, name_to_index, name_to_index_lower = _load_artifacts()
 
-    found_indices: list[int] = []
+    found: list[int] = []
     not_found: list[str] = []
+    seen_indices: set[int] = set()
 
-    for name in track_names:
-        if name in name_to_index:
-            found_indices.append(name_to_index[name])
-        elif name.lower() in name_to_index_lower:
-            found_indices.append(name_to_index_lower[name.lower()])
+    for track in tracks:
+        if len(found) >= max_ref_tracks:
+            break
+        idx = _lookup(track["name"], track["artist"], name_to_index, name_to_index_lower)
+        if idx is not None and idx not in seen_indices:
+            found.append(idx)
+            seen_indices.add(idx)
         else:
-            not_found.append(name)
+            not_found.append(track["name"])
 
-    if not found_indices:
+    if not found:
         return None, not_found, 0
 
-    query_vector = X_norm[found_indices].mean(axis=0, keepdims=True)
+    track_groups: list[dict] = []
+    n_query = min(n_per_track + 1, X_norm.shape[0] - 1)
 
-    n_query = min(n + len(found_indices) + 10, X_norm.shape[0] - 1)
-    distances, indices = knn_index.kneighbors(query_vector, n_neighbors=n_query)
+    for query_idx in found:
+        query_vector = X_norm[query_idx : query_idx + 1]
+        distances, indices = knn_index.kneighbors(query_vector, n_neighbors=n_query)
 
-    found_set = set(found_indices)
-    results: list[dict] = []
+        source_row = metadata.iloc[query_idx]
+        recs: list[dict] = []
 
-    for dist, idx in zip(distances[0], indices[0]):
-        if idx in found_set:
-            continue
-        if len(results) >= n:
-            break
+        for dist, idx in zip(distances[0], indices[0]):
+            if idx == query_idx:
+                continue
+            if len(recs) >= n_per_track:
+                break
+            row = metadata.iloc[idx]
+            recs.append(
+                {
+                    "track_name": str(row["track_name"]),
+                    "artists": str(row["artists"]),
+                    "genre": str(row["track_genre"]),
+                    "similarity_score": round(float(1.0 - dist), 4),
+                }
+            )
 
-        row = metadata.iloc[idx]
-        results.append(
+        track_groups.append(
             {
-                "track_name": str(row["track_name"]),
-                "artists": str(row["artists"]),
-                "genre": str(row["track_genre"]),
-                "similarity_score": round(float(1.0 - dist), 4),
+                "source": {
+                    "track_name": str(source_row["track_name"]),
+                    "artists": str(source_row["artists"]),
+                    "genre": str(source_row["track_genre"]),
+                },
+                "recommendations": recs,
             }
         )
 
-    return results, not_found, len(found_indices)
+    return track_groups, not_found, len(found)
